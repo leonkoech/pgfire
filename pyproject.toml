@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pgfire"
-version = "0.0.1"  # Matches the tag version you just created
+version = "0.0.2"  # Matches the tag version you just created
 description = "A lightweight Firestore-to-PostgreSQL JSONB developer experience migration bridge."
 readme = "README.md"
 authors = [{ name = "Leon Koech" }]

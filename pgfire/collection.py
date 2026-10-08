@@ -18,6 +18,7 @@ class Query:
         self._filters: list = []
         self._order: Optional[tuple] = None
         self._limit_n: Optional[int] = None
+        self._select: Optional[list] = None
 
     def where(self, field: str, op: str, value: Any) -> "Query":
         q = self._clone()
@@ -34,11 +35,25 @@ class Query:
         q._limit_n = n
         return q
 
+    def select(self, field_paths) -> "Query":
+        """Projection, like Firestore's query.select([...]): returned
+        snapshots contain only these top-level fields. As in Firestore, a
+        field a document doesn't have is absent from its dict (not None),
+        so `d.get("x", default)` keeps working. Avoids shipping whole JSONB
+        documents when a caller only needs a few fields."""
+        fields = list(field_paths)
+        if any("." in f for f in fields):
+            raise NotImplementedError("select() supports top-level fields only")
+        q = self._clone()
+        q._select = fields
+        return q
+
     def _clone(self) -> "Query":
         q = Query(self._client, self._table, self._parent_id)
         q._filters = list(self._filters)
         q._order = self._order
         q._limit_n = self._limit_n
+        q._select = self._select
         return q
 
     def _where_sql(self) -> tuple:
@@ -63,7 +78,17 @@ class Query:
         real_cols = self._client.columns.real_columns(self._table)
         where_sql, params = self._where_sql()
 
-        sql = f'SELECT id, data FROM "{self._table}"{where_sql}'
+        if self._select is not None:
+            # Only keys the document actually has (Firestore projection
+            # semantics) - jsonb_build_object would emit missing ones as null.
+            projection = (
+                "COALESCE((SELECT jsonb_object_agg(k, v) FROM jsonb_each(data) AS e(k, v) "
+                "WHERE k = ANY(%s)), '{}'::jsonb)"
+            )
+            params = [self._select] + params
+        else:
+            projection = "data"
+        sql = f'SELECT id, {projection} FROM "{self._table}"{where_sql}'
         if self._order:
             field, direction = self._order
             sql += f" ORDER BY {order_expr(field, real_cols)} {direction}"

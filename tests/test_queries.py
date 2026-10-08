@@ -128,3 +128,24 @@ def test_aggregate_with_raw_sql_filter(db):
         demo_patients="user_type = 'patient' AND is_demo = true",
     )
     assert result == {"demo_patients": 1}
+
+
+def test_select_projects_fields_and_omits_missing(db):
+    db.collection("test_users").document("s1").set({"user_type": "patient", "email": "s1@x.com", "amount": 5, "bio": "x" * 500})
+    db.collection("test_users").document("s2").set({"user_type": "patient", "email": "s2@x.com"})
+    db.collection("test_users").document("s3").set({"user_type": "therapist", "email": "s3@x.com", "amount": 9})
+    rows = list(
+        db.collection("test_users").where("user_type", "==", "patient")
+        .select(["email", "amount"]).order_by("email").limit(5).stream()
+    )
+    assert [(r.id, r.to_dict()) for r in rows] == [
+        ("s1", {"email": "s1@x.com", "amount": 5}),
+        ("s2", {"email": "s2@x.com"}),  # missing field absent, not None (Firestore semantics)
+    ]
+    assert rows[1].to_dict().get("amount", 0) == 0
+
+
+def test_select_rejects_dotted_paths(db):
+    import pytest
+    with pytest.raises(NotImplementedError):
+        db.collection("test_users").select(["company_data.company_id"])

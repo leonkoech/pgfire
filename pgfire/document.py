@@ -36,8 +36,23 @@ class DocumentRef:
         return CollectionRef(self._client, f"{self._table}__{name}", parent_id=self.id)
 
     def get(self) -> DocumentSnapshot:
+        # Scope by parent_id too when it's actually known - but a DocumentRef
+        # built via a flat collection path (e.g. db.collection("companies__invites")
+        # with no parent chain) has parent_id=None on purpose, to do a global
+        # by-id lookup across every parent. Filtering on "parent_id = NULL"
+        # there would never match anything (SQL NULL semantics), so this
+        # mirrors Query._where_sql's own "only filter when parent_id is not
+        # None" rule rather than always filtering whenever the column exists.
+        has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
+        scope_to_parent = has_parent_col and self._parent_id is not None
         with self._client.conn.cursor() as cur:
-            cur.execute(f'SELECT data FROM "{self._table}" WHERE id = %s', (self.id,))
+            if scope_to_parent:
+                cur.execute(
+                    f'SELECT data FROM "{self._table}" WHERE id = %s AND parent_id = %s',
+                    (self.id, self._parent_id),
+                )
+            else:
+                cur.execute(f'SELECT data FROM "{self._table}" WHERE id = %s', (self.id,))
             row = cur.fetchone()
             return DocumentSnapshot(self.id, row[0] if row else None)
 
@@ -72,11 +87,19 @@ class DocumentRef:
         for col in ts_updates:
             merge_clause_parts.append(f"{col} = EXCLUDED.{col}")
 
+        # Child doc ids are only unique WITHIN their parent (same as a
+        # Firestore subcollection) - conflict on (parent_id, id) when this
+        # table has one, not on `id` alone, or two parents writing the same
+        # child id (e.g. the same calendar event id under both a patient's
+        # and a therapist's users/{uid}/calendar) collide instead of
+        # producing two independent rows.
+        conflict_cols = "(parent_id, id)" if has_parent_col else "(id)"
+
         with self._client.conn.cursor() as cur:
             cur.execute(
                 f'INSERT INTO "{self._table}" ({", ".join(col_names)}) '
                 f'VALUES ({", ".join(value_placeholders)}) '
-                f'ON CONFLICT (id) DO UPDATE SET {", ".join(merge_clause_parts)}',
+                f'ON CONFLICT {conflict_cols} DO UPDATE SET {", ".join(merge_clause_parts)}',
                 col_values,
             )
         if not self._client._in_transaction:
@@ -86,8 +109,17 @@ class DocumentRef:
         self.set(data, merge=True)
 
     def delete(self) -> None:
+        # Same "only scope to parent_id when it's actually known" rule as get().
+        has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
+        scope_to_parent = has_parent_col and self._parent_id is not None
         with self._client.conn.cursor() as cur:
-            cur.execute(f'DELETE FROM "{self._table}" WHERE id = %s', (self.id,))
+            if scope_to_parent:
+                cur.execute(
+                    f'DELETE FROM "{self._table}" WHERE id = %s AND parent_id = %s',
+                    (self.id, self._parent_id),
+                )
+            else:
+                cur.execute(f'DELETE FROM "{self._table}" WHERE id = %s', (self.id,))
         if not self._client._in_transaction:
             self._client.conn.commit()
 

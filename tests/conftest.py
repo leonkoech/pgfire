@@ -28,9 +28,10 @@ def db():
         """)
         cur.execute("""
             CREATE TABLE test_users__notes (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                data JSONB NOT NULL
+                id TEXT NOT NULL,
+                parent_id TEXT NOT NULL,
+                data JSONB NOT NULL,
+                PRIMARY KEY (parent_id, id)
             )
         """)
     client.conn.commit()

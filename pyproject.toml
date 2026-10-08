@@ -4,20 +4,32 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pgfire"
-version = "0.1.1"
+version = "0.1.2"
 description = "A lightweight Firestore-to-PostgreSQL JSONB developer experience migration bridge."
 readme = "README.md"
 authors = [{ name = "Leon Koech" }]
 license = { text = "MIT" }
+keywords = ["postgresql", "firestore", "database", "migration", "jsonb", "firebase"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Topic :: Database",
+    "Development Status :: 3 - Alpha",
 ]
 dependencies = [
     "psycopg2-binary>=2.9.0"
 ]
 requires-python = ">=3.9"
+
+[project.urls]
+Homepage = "https://github.com/leonkoech/pgfire"
+Repository = "https://github.com/leonkoech/pgfire"
+Issues = "https://github.com/leonkoech/pgfire/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0.0"]

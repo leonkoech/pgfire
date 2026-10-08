@@ -160,8 +160,11 @@ class WriteBatch:
         self._ops.append(("delete", ref, None, False))
 
     def commit(self) -> None:
-        for op, ref, data, merge in self._ops:
-            if op == "delete":
-                ref.delete()
-            else:
-                ref.set(data, merge=merge)
+        # All-or-nothing, like a Firestore WriteBatch: previously each op
+        # committed on its own, so a failure midway left earlier ops applied.
+        with self._client.transaction():
+            for op, ref, data, merge in self._ops:
+                if op == "delete":
+                    ref.delete()
+                else:
+                    ref.set(data, merge=merge)

@@ -133,3 +133,55 @@ def test_flat_collection_lookup_with_no_parent_still_works(db):
     assert ref.get().to_dict()["text"] == "flat"
     ref.delete()
     assert not ref.get().exists
+
+
+def test_read_does_not_leave_connection_idle_in_transaction(db):
+    """A long-lived client sitting 'idle in transaction' after every read
+    blocks VACUUM and holds locks that stall migrations."""
+    import psycopg2.extensions as ext
+
+    db.collection("test_users").document("missing").get()
+    assert db.conn.info.transaction_status == ext.TRANSACTION_STATUS_IDLE
+
+
+def test_failed_query_does_not_poison_later_queries(db):
+    """Without autocommit, one failed statement aborts the open transaction
+    and every later query fails with InFailedSqlTransaction."""
+    import psycopg2
+
+    try:
+        db.collection("no_such_table_pgfire_test").document("x").get()
+    except psycopg2.Error:
+        pass
+    db.collection("test_users").document("ok").set({"email": "ok@x.com"})
+    assert db.collection("test_users").document("ok").get().exists
+
+
+def test_batch_commit_is_all_or_nothing(db):
+    """Firestore WriteBatch is atomic; a failure midway must not leave the
+    earlier ops applied."""
+    batch = db.batch()
+    batch.set(db.collection("test_users").document("b1"), {"email": "b1@x.com"})
+    batch.set(db.collection("no_such_table_pgfire_test").document("b2"), {"x": 1})
+    try:
+        batch.commit()
+    except Exception:
+        pass
+    assert not db.collection("test_users").document("b1").get().exists
+
+
+def test_reconnects_after_connection_closed(db):
+    db.conn.close()
+    db.collection("test_users").document("r1").set({"email": "r1@x.com"})
+    assert db.collection("test_users").document("r1").get().exists
+
+
+def test_transaction_still_rolls_back_with_autocommit_default(db):
+    try:
+        with db.transaction():
+            db.collection("test_users").document("tx1").set({"email": "tx@x.com"})
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert not db.collection("test_users").document("tx1").get().exists
+    assert db.conn.autocommit is True

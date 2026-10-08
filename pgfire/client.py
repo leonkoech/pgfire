@@ -56,8 +56,7 @@ class PostgresClient:
     returns a query/write handle for that table."""
 
     def __init__(self, dsn: str):
-        self.conn = psycopg2.connect(dsn)
-        self.columns = _ColumnCache(self.conn)
+        self._dsn = dsn
         # Set while inside a `with db.transaction():` block, so individual
         # writes (DocumentRef.set/update/delete) skip their own commit and
         # let the transaction's __exit__ decide commit vs rollback. Without
@@ -65,9 +64,38 @@ class PostgresClient:
         # the transaction wrapper, making rollback-on-exception a no-op -
         # a real bug caught by this library's own test suite.
         self._in_transaction = False
+        self._connect()
+
+    def _connect(self) -> None:
+        self.conn = psycopg2.connect(self._dsn)
+        # Autocommit outside explicit transactions. Without it, psycopg2
+        # opens a transaction on the first statement and keeps it open:
+        #   - every read leaves the connection "idle in transaction",
+        #     which on a long-lived connection blocks VACUUM and holds
+        #     locks that stall migrations/DDL;
+        #   - any failed statement aborts that transaction, and every
+        #     later query on the connection then fails with
+        #     InFailedSqlTransaction until someone rolls back - i.e. one
+        #     bad query permanently breaks a shared per-process client.
+        # With autocommit each statement is its own transaction, so
+        # neither can happen. transaction() turns it off for its block.
+        self.conn.autocommit = True
+        self.columns = _ColumnCache(self.conn)
+
+    def ensure_connected(self) -> None:
+        """Reconnect if the connection has been closed (server restart,
+        RDS failover, idle disconnect). psycopg2 marks a connection closed
+        once a query on it hits a dead socket, so the request that hit the
+        drop fails, and the next one transparently reconnects instead of
+        the client staying dead for the life of the process. Never
+        reconnects mid-transaction - that would silently drop the
+        transaction's work."""
+        if self.conn.closed and not self._in_transaction:
+            self._connect()
 
     def collection(self, name: str):
         from .collection import CollectionRef
+        self.ensure_connected()
         return CollectionRef(self, name)
 
     def batch(self):
@@ -84,17 +112,22 @@ class PostgresClient:
         outermost one (only it commits/rolls back) rather than trying to
         model real savepoints - good enough for this library's scope."""
         was_already_in_transaction = self._in_transaction
+        if not was_already_in_transaction:
+            self.ensure_connected()
+            self.conn.autocommit = False
         self._in_transaction = True
         try:
             yield self
             if not was_already_in_transaction:
                 self.conn.commit()
         except Exception:
-            if not was_already_in_transaction:
+            if not was_already_in_transaction and not self.conn.closed:
                 self.conn.rollback()
             raise
         finally:
             self._in_transaction = was_already_in_transaction
+            if not was_already_in_transaction and not self.conn.closed:
+                self.conn.autocommit = True
 
     def close(self) -> None:
         self.conn.close()

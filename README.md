@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/leonkoech/pgfire/main/assets/logo.png" alt="pgfire logo" width="180">
+</p>
+
 # pgfire
 
 A minimal, ~400-line Firestore-to-PostgreSQL migration bridge for Python. `pgfire` keeps the chainable, familiar developer experience of the Google Cloud Firestore SDK (`.collection().document().where()`) running on plain PostgreSQL tables with native JSONB.
@@ -54,7 +58,7 @@ if snap.exists:
     user = snap.to_dict()
 
 # Queries
-therapists = db.collection("users").where("user_type", "==", "therapist").where("is_demo", "==", False).get()
+admins = db.collection("users").where("user_type", "==", "admin").where("is_demo", "==", False).get()
 
 # Server-side aggregation - no row fetch, no Python-side counting loop
 counts = db.collection("users").where("user_type", "==", "patient").aggregate(

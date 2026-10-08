@@ -4,7 +4,18 @@
 
 # pgfire
 
-A minimal, ~400-line Firestore-to-PostgreSQL migration bridge for Python. `pgfire` keeps the chainable, familiar developer experience of the Google Cloud Firestore SDK (`.collection().document().where()`) running on plain PostgreSQL tables with native JSONB.
+[![PyPI version](https://img.shields.io/pypi/v/pgfire.svg)](https://pypi.org/project/pgfire/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pgfire.svg)](https://pypi.org/project/pgfire/)
+[![Tests](https://github.com/leonkoech/pgfire/actions/workflows/test.yml/badge.svg)](https://github.com/leonkoech/pgfire/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/pypi/l/pgfire.svg)](https://github.com/leonkoech/pgfire/blob/main/LICENSE)
+
+Drop-in Firestore API, backed by Postgres — migrate an existing Firestore codebase to PostgreSQL without rewriting every `.collection().document()` call site.
+
+```bash
+pip install pgfire
+```
+
+`pgfire` keeps the chainable, familiar developer experience of the Google Cloud Firestore SDK (`.collection().document().where()`) running on plain PostgreSQL tables with native JSONB, in ~400 lines.
 
 ## Scope & intention
 

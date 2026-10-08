@@ -3,6 +3,7 @@ coercion for JSONB comparisons, and NULL-check handling."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, date
 from typing import Any, Optional
 
@@ -28,6 +29,45 @@ def field_expr(field: str, real_columns: set) -> str:
         return f"data->>'{parts[0]}'"
     path = "->".join(f"'{p}'" for p in parts[:-1])
     return f"data->{path}->>'{parts[-1]}'"
+
+
+def field_jsonb_expr(field: str) -> str:
+    """Like field_expr's JSONB fallback but keeps the value as jsonb
+    (`->` instead of `->>`). jsonb compares numbers numerically, while
+    `->>` text compares them lexically ("10" < "9")."""
+    parts = field.split(".")
+    return "data->" + "->".join(f"'{p}'" for p in parts)
+
+
+def is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def compare_sql(field: str, op: str, value: Any, real_columns: set) -> tuple:
+    """SQL fragment + params for one (field, op, value) filter."""
+    sql_op = OP_SQL.get(op)
+    if sql_op is None:
+        raise NotImplementedError(f"Unsupported operator: {op}")
+    is_real_column = field in real_columns
+    expr = field_expr(field, real_columns)
+    null_sql = null_check_sql(expr, op, value)
+    if null_sql is not None:
+        return null_sql, []
+    if op == "in":
+        placeholders = ", ".join(["%s"] * len(value))
+        return f"{expr} IN ({placeholders})", [coerce(v, is_real_column) for v in value]
+    if not is_real_column and is_number(value):
+        # Numeric comparison against a JSONB number: compare as jsonb so
+        # 10 > 9 and 5 == 5.0, matching Firestore's numeric semantics.
+        return f"{field_jsonb_expr(field)} {sql_op} %s::jsonb", [json.dumps(value)]
+    return f"{expr} {sql_op} %s", [coerce(value, is_real_column)]
+
+
+def order_expr(field: str, real_columns: set) -> str:
+    """ORDER BY expression: real columns as-is; JSONB fields as jsonb so
+    numbers sort numerically (string ordering is unchanged - jsonb strings
+    compare with the same collation as text)."""
+    return field if field in real_columns else field_jsonb_expr(field)
 
 
 def null_check_sql(expr: str, op: str, value: Any) -> Optional[str]:

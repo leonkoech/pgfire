@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Iterator, Optional
 
 from .document import DocumentRef, DocumentSnapshot, new_id
-from .utils import OP_SQL, coerce, field_expr, null_check_sql
+from .utils import compare_sql, order_expr
 
 
 class Query:
@@ -53,22 +53,9 @@ class Query:
             where_parts.append("parent_id = %s")
             params.append(self._parent_id)
         for field, op, value in self._filters:
-            is_real_column = field in real_cols
-            expr = field_expr(field, real_cols)
-            null_sql = null_check_sql(expr, op, value)
-            if null_sql is not None:
-                where_parts.append(null_sql)
-                continue
-            sql_op = OP_SQL.get(op)
-            if sql_op is None:
-                raise NotImplementedError(f"Unsupported operator: {op}")
-            if op == "in":
-                placeholders = ", ".join(["%s"] * len(value))
-                where_parts.append(f"{expr} IN ({placeholders})")
-                params.extend(coerce(v, is_real_column) for v in value)
-            else:
-                where_parts.append(f"{expr} {sql_op} %s")
-                params.append(coerce(value, is_real_column))
+            sql, p = compare_sql(field, op, value, real_cols)
+            where_parts.append(sql)
+            params.extend(p)
         clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
         return clause, params
 
@@ -79,7 +66,7 @@ class Query:
         sql = f'SELECT id, data FROM "{self._table}"{where_sql}'
         if self._order:
             field, direction = self._order
-            sql += f" ORDER BY {field_expr(field, real_cols)} {direction}"
+            sql += f" ORDER BY {order_expr(field, real_cols)} {direction}"
         if self._limit_n is not None:
             sql += " LIMIT %s"
             params.append(self._limit_n)
@@ -133,17 +120,9 @@ class Query:
                 select_parts.append(f"COUNT(*) FILTER (WHERE {cond}) AS {label}")
                 continue
             field, op, value = cond
-            is_real_column = field in real_cols
-            expr = field_expr(field, real_cols)
-            null_sql = null_check_sql(expr, op, value)
-            if null_sql is not None:
-                select_parts.append(f"COUNT(*) FILTER (WHERE {null_sql}) AS {label}")
-                continue
-            sql_op = OP_SQL.get(op)
-            if sql_op is None:
-                raise NotImplementedError(f"Unsupported operator: {op}")
-            select_parts.append(f"COUNT(*) FILTER (WHERE {expr} {sql_op} %s) AS {label}")
-            select_params.append(coerce(value, is_real_column))
+            sql, p = compare_sql(field, op, value, real_cols)
+            select_parts.append(f"COUNT(*) FILTER (WHERE {sql}) AS {label}")
+            select_params.extend(p)
         params = select_params + base_params
         sql = f'SELECT {", ".join(select_parts)} FROM "{self._table}"{base_where}'
         with self._client.conn.cursor() as cur:

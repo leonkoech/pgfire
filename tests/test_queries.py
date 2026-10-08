@@ -83,6 +83,45 @@ def test_jsonb_datetime_filter_matches_same_day_boundary(db):
     assert [h.id for h in hits] == ["d1"]
 
 
+def _seed_numbers(db):
+    for doc_id, n in (("n0", 0), ("n100", 100), ("n20", 20), ("n5", 5.5)):
+        db.collection("test_users").document(doc_id).set({"start_index": n, "label": doc_id})
+
+
+def test_order_by_jsonb_number_is_numeric_not_lexical(db):
+    """Text ordering would give 0, 100, 20, 5.5."""
+    _seed_numbers(db)
+    rows = list(db.collection("test_users").order_by("start_index").stream())
+    assert [r.to_dict()["start_index"] for r in rows] == [0, 5.5, 20, 100]
+
+
+def test_numeric_range_filter_on_jsonb_is_numeric(db):
+    """Lexically "100" < "9" and "20" < "9"; numerically both are > 9."""
+    _seed_numbers(db)
+    hits = {r.id for r in db.collection("test_users").where("start_index", ">", 9).stream()}
+    assert hits == {"n20", "n100"}
+
+
+def test_numeric_equality_matches_int_and_float(db):
+    db.collection("test_users").document("f1").set({"score": 5.0})
+    assert [r.id for r in db.collection("test_users").where("score", "==", 5).stream()] == ["f1"]
+
+
+def test_order_by_jsonb_string_unchanged(db):
+    for doc_id, ts in (("a", "2026-10-08T15:00:00+00:00"), ("b", "2026-01-01T00:00:00+00:00"), ("c", "2026-10-08T09:00:00+00:00")):
+        db.collection("test_users").document(doc_id).set({"ts": ts})
+    assert [r.id for r in db.collection("test_users").order_by("ts").stream()] == ["b", "c", "a"]
+
+
+def test_aggregate_numeric_and_in_filters(db):
+    _seed_numbers(db)
+    result = db.collection("test_users").aggregate(
+        big=("start_index", ">=", 20),
+        named=("label", "in", ["n0", "n5"]),
+    )
+    assert result == {"big": 2, "named": 2}
+
+
 def test_aggregate_with_raw_sql_filter(db):
     _seed(db)
     result = db.collection("test_users").aggregate(

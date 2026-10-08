@@ -179,7 +179,7 @@ class WriteBatch:
         self._ops.append(("set", ref, data, merge))
 
     def update(self, ref: DocumentRef, data: dict) -> None:
-        self._ops.append(("set", ref, data, True))
+        self._ops.append(("update", ref, data, True))
 
     def delete(self, ref: DocumentRef) -> None:
         self._ops.append(("delete", ref, None, False))
@@ -191,5 +191,7 @@ class WriteBatch:
             for op, ref, data, merge in self._ops:
                 if op == "delete":
                     ref.delete()
+                elif op == "update":
+                    ref.update(data)  # NotFound fails the whole batch, as in Firestore
                 else:
                     ref.set(data, merge=merge)

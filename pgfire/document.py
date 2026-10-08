@@ -57,24 +57,51 @@ class DocumentRef:
             row = cur.fetchone()
             return DocumentSnapshot(self.id, row[0] if row else None)
 
+    def update(self, data: dict) -> None:
+        """Like Firestore's DocumentReference.update(): merges fields into an
+        EXISTING document and raises NotFound if there isn't one. (Upserting
+        here would e.g. turn an update to a deleted calendar event into a
+        brand-new ghost event holding only the updated fields.) One atomic
+        UPDATE statement, transforms included."""
+        plain, ops = _split_fields(data)
+        if ops:
+            data_expr, params = _merge_with_transforms_sql(self._table, plain, ops)
+        else:
+            data_expr, params = f'"{self._table}".data || %s::jsonb', [json.dumps(plain, default=json_default)]
+        sets = [f"data = {data_expr}"]
+        for col, value in self._timestamp_updates(plain).items():
+            sets.append(f"{col} = %s")
+            params.append(value)
+        where, where_params = self._where_self()
+        with self._client.conn.cursor() as cur:
+            cur.execute(f'UPDATE "{self._table}" SET {", ".join(sets)} WHERE {where}', params + where_params)
+            if cur.rowcount == 0:
+                raise NotFound(f"No document to update: {self._table}/{self.id}")
+        if not self._client._in_transaction:
+            self._client.conn.commit()
+
+    def _where_self(self) -> tuple:
+        has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
+        if has_parent_col and self._parent_id is not None:
+            return "id = %s AND parent_id = %s", [self.id, self._parent_id]
+        return "id = %s", [self.id]
+
+    def _timestamp_updates(self, plain: dict) -> dict:
+        # Plain timestamp columns (created_at, session_date, due_date, ...)
+        # aren't GENERATED, so populate any that match a key in `data`
+        # ourselves - otherwise they silently stay NULL forever.
+        out = {}
+        for col, data_type in self._client.columns.writable_timestamp_columns(self._table).items():
+            if col in plain and plain[col] is not None:
+                value = _timestamp_column_value(plain[col], data_type)
+                if value is not None:
+                    out[col] = value
+        return out
+
     def set(self, data: dict, merge: bool = False) -> None:
         from . import transforms as tf
 
-        # Split plain values from Firestore field transforms. SERVER_TIMESTAMP
-        # just becomes "now"; the rest are applied server-side (see below).
-        now = datetime.now(timezone.utc)
-        plain, ops = {}, {}
-        for key, value in data.items():
-            k = tf.kind(value)
-            if k == "server_timestamp":
-                plain[key] = now
-            elif k is None:
-                if tf.contains_nested_transform(value):
-                    raise NotImplementedError(
-                        f"Field transforms nested inside '{key}' aren't supported; use a top-level field")
-                plain[key] = value
-            else:
-                ops[key] = (k, value)
+        plain, ops = _split_fields(data)
 
         # The document as it lands when no row exists yet (and, for a
         # non-merge set, the whole replacement document): transforms take
@@ -89,17 +116,7 @@ class DocumentRef:
                 initial[key] = []
         payload = json.dumps(initial, default=json_default)
         has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
-
-        # Plain timestamp columns (created_at, session_date, due_date, ...)
-        # aren't GENERATED, so populate any that match a key in `data`
-        # ourselves - otherwise they silently stay NULL forever.
-        ts_cols = self._client.columns.writable_timestamp_columns(self._table)
-        ts_updates = {}
-        for col, data_type in ts_cols.items():
-            if col in plain and plain[col] is not None:
-                value = _timestamp_column_value(plain[col], data_type)
-                if value is not None:
-                    ts_updates[col] = value
+        ts_updates = self._timestamp_updates(plain)
 
         col_names = ["id"]
         col_values = [self.id]
@@ -145,9 +162,6 @@ class DocumentRef:
         if not self._client._in_transaction:
             self._client.conn.commit()
 
-    def update(self, data: dict) -> None:
-        self.set(data, merge=True)
-
     def delete(self) -> None:
         # Same "only scope to parent_id when it's actually known" rule as get().
         has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
@@ -166,6 +180,32 @@ class DocumentRef:
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+class NotFound(LookupError):
+    """Raised by DocumentRef.update() when the document doesn't exist
+    (Firestore raises google.api_core.exceptions.NotFound there)."""
+
+
+def _split_fields(data: dict) -> tuple:
+    """Split a write's fields into plain values and field transforms.
+    SERVER_TIMESTAMP simply becomes "now"; the rest are applied server-side."""
+    from . import transforms as tf
+
+    now = datetime.now(timezone.utc)
+    plain, ops = {}, {}
+    for key, value in data.items():
+        k = tf.kind(value)
+        if k == "server_timestamp":
+            plain[key] = now
+        elif k is None:
+            if tf.contains_nested_transform(value):
+                raise NotImplementedError(
+                    f"Field transforms nested inside '{key}' aren't supported; use a top-level field")
+            plain[key] = value
+        else:
+            ops[key] = (k, value)
+    return plain, ops
 
 
 def _merge_with_transforms_sql(table: str, plain: dict, ops: dict) -> tuple:

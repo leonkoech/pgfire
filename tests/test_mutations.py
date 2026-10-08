@@ -218,3 +218,48 @@ def test_unparseable_timestamp_value_does_not_fail_write(db):
     db.collection("test_users").document("tz3").set({"created_at": "", "email": "tz3@x.com"})
     snap = db.collection("test_users").document("tz3").get()
     assert snap.exists and snap.to_dict()["created_at"] == ""
+
+
+def test_update_missing_document_raises_not_found(db):
+    """Firestore semantics: update() on a missing doc raises, it must not
+    create a ghost document holding only the updated fields."""
+    import pytest
+    from pgfire import NotFound
+
+    with pytest.raises(NotFound):
+        db.collection("test_users").document("ghost").update({"status": "cancelled"})
+    assert not db.collection("test_users").document("ghost").get().exists
+
+
+def test_update_existing_merges_and_sets_timestamp_column(db):
+    ref = db.collection("test_users").document("u1")
+    ref.set({"email": "u1@x.com", "n": 1})
+    ref.update({"n": 2, "created_at": "2026-10-20T13:00:00+03:00"})
+    assert ref.get().to_dict() == {"email": "u1@x.com", "n": 2, "created_at": "2026-10-20T13:00:00+03:00"}
+    with db.conn.cursor() as cur:
+        cur.execute("SELECT created_at FROM test_users WHERE id = 'u1'")
+        assert str(cur.fetchone()[0]) == "2026-10-20 10:00:00"
+
+
+def test_update_scoped_to_parent(db):
+    import pytest
+    from pgfire import NotFound
+
+    a = db.collection("test_users").document("pA").collection("notes").document("same")
+    a.set({"v": 1})
+    b = db.collection("test_users").document("pB").collection("notes").document("same")
+    with pytest.raises(NotFound):
+        b.update({"v": 2})  # exists under pA only
+    assert a.get().to_dict() == {"v": 1}
+
+
+def test_batch_update_of_missing_doc_fails_whole_batch(db):
+    db.collection("test_users").document("bx").set({"v": 1})
+    batch = db.batch()
+    batch.set(db.collection("test_users").document("bx"), {"v": 2})
+    batch.update(db.collection("test_users").document("missing"), {"v": 3})
+    try:
+        batch.commit()
+    except Exception:
+        pass
+    assert db.collection("test_users").document("bx").get().to_dict() == {"v": 1}

@@ -20,7 +20,7 @@ call sites before assuming parity on anything not listed here.
 
 from .client import PostgresClient
 from .collection import CollectionRef, Query, WriteBatch
-from .document import DocumentRef, DocumentSnapshot
+from .document import DocumentRef, DocumentSnapshot, NotFound
 from .transforms import DELETE_FIELD, SERVER_TIMESTAMP, ArrayRemove, ArrayUnion, Increment
 
 __all__ = [
@@ -30,6 +30,7 @@ __all__ = [
     "WriteBatch",
     "DocumentRef",
     "DocumentSnapshot",
+    "NotFound",
     "Increment",
     "ArrayUnion",
     "ArrayRemove",

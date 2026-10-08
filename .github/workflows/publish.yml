@@ -3,6 +3,11 @@ name: Publish pgfire to PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    # auto-release.yml dispatches this explicitly - a release created with
+    # the default GITHUB_TOKEN doesn't trigger the `release: published`
+    # listener above (GitHub's anti-recursion rule), so auto-release.yml
+    # can't just rely on this trigger firing on its own.
 
 jobs:
   pypi-publish:

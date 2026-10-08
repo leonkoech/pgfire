@@ -2,11 +2,18 @@ name: Auto-release on version bump
 
 # Automates what had to be done by hand for 0.1.1: the only manual step
 # from here on is bumping `version` in pyproject.toml and merging to main.
-# This workflow then tags that commit and creates a GitHub Release
-# matching it, which triggers publish.yml (on `release: published`) to
-# actually build and ship to PyPI. No separate "create a release" step,
-# and no more silent no-ops from a tag name that doesn't match the
-# version PyPI actually publishes.
+# This workflow tags that commit, creates a GitHub Release, and then
+# explicitly dispatches publish.yml itself.
+#
+# That last step matters: a release created with the default
+# GITHUB_TOKEN inside a workflow does NOT trigger other workflows'
+# event listeners (e.g. publish.yml's `on: release: published`) - a
+# deliberate GitHub Actions anti-recursion rule. v0.1.2 silently never
+# published because of exactly this (confirmed: no publish.yml run
+# appeared for its release event at all). An explicit
+# `gh workflow run` dispatch isn't subject to that restriction, so
+# this workflow triggers publish.yml itself rather than relying on it
+# to notice the release.
 
 on:
   push:
@@ -18,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -48,3 +56,10 @@ jobs:
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes \
             --target "${{ github.sha }}"
+
+      - name: Dispatch PyPI publish directly (release event won't fire it)
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run publish.yml --ref main

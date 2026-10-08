@@ -58,7 +58,36 @@ class DocumentRef:
             return DocumentSnapshot(self.id, row[0] if row else None)
 
     def set(self, data: dict, merge: bool = False) -> None:
-        payload = json.dumps(data, default=json_default)
+        from . import transforms as tf
+
+        # Split plain values from Firestore field transforms. SERVER_TIMESTAMP
+        # just becomes "now"; the rest are applied server-side (see below).
+        now = datetime.now(timezone.utc)
+        plain, ops = {}, {}
+        for key, value in data.items():
+            k = tf.kind(value)
+            if k == "server_timestamp":
+                plain[key] = now
+            elif k is None:
+                if tf.contains_nested_transform(value):
+                    raise NotImplementedError(
+                        f"Field transforms nested inside '{key}' aren't supported; use a top-level field")
+                plain[key] = value
+            else:
+                ops[key] = (k, value)
+
+        # The document as it lands when no row exists yet (and, for a
+        # non-merge set, the whole replacement document): transforms take
+        # their "no prior value" result, as in Firestore.
+        initial = dict(plain)
+        for key, (k, value) in ops.items():
+            if k == "increment":
+                initial[key] = value.value
+            elif k == "array_union":
+                initial[key] = tf.dedupe(list(value.values))
+            elif k == "array_remove":
+                initial[key] = []
+        payload = json.dumps(initial, default=json_default)
         has_parent_col = "parent_id" in self._client.columns.real_columns(self._table)
 
         # Plain timestamp columns (created_at, session_date, due_date, ...)
@@ -67,8 +96,8 @@ class DocumentRef:
         ts_cols = self._client.columns.writable_timestamp_columns(self._table)
         ts_updates = {}
         for col, data_type in ts_cols.items():
-            if col in data and data[col] is not None:
-                value = _timestamp_column_value(data[col], data_type)
+            if col in plain and plain[col] is not None:
+                value = _timestamp_column_value(plain[col], data_type)
                 if value is not None:
                     ts_updates[col] = value
 
@@ -87,9 +116,14 @@ class DocumentRef:
             col_values.append(ts_updates[col])
             value_placeholders.append("%s")
 
-        merge_clause_parts = [
-            f'data = "{self._table}".data || EXCLUDED.data' if merge else "data = EXCLUDED.data"
-        ]
+        update_params: list = []
+        if merge and ops:
+            data_expr, update_params = _merge_with_transforms_sql(self._table, plain, ops)
+            merge_clause_parts = [f"data = {data_expr}"]
+        else:
+            merge_clause_parts = [
+                f'data = "{self._table}".data || EXCLUDED.data' if merge else "data = EXCLUDED.data"
+            ]
         for col in ts_updates:
             merge_clause_parts.append(f"{col} = EXCLUDED.{col}")
 
@@ -106,7 +140,7 @@ class DocumentRef:
                 f'INSERT INTO "{self._table}" ({", ".join(col_names)}) '
                 f'VALUES ({", ".join(value_placeholders)}) '
                 f'ON CONFLICT {conflict_cols} DO UPDATE SET {", ".join(merge_clause_parts)}',
-                col_values,
+                col_values + update_params,
             )
         if not self._client._in_transaction:
             self._client.conn.commit()
@@ -132,6 +166,61 @@ class DocumentRef:
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _merge_with_transforms_sql(table: str, plain: dict, ops: dict) -> tuple:
+    """SQL expression (+ params, in text order) for the existing row's new
+    `data` in a merge write that carries field transforms. Everything is
+    one expression inside the upsert, so it's atomic like Firestore's
+    server-side transforms."""
+    from .transforms import dedupe
+
+    old = f'"{table}".data'
+    # (sql_fragment, params) pieces, concatenated in order, so params always
+    # line up with the %s placeholders in the final text.
+    frags: list = []
+
+    def emit(sql: str, *ps):
+        frags.append((sql, list(ps)))
+
+    def existing_array(key):
+        # A missing or non-array prior value counts as an empty array.
+        emit(f"(CASE WHEN jsonb_typeof({old}->%s) = 'array' THEN {old}->%s ELSE '[]'::jsonb END)", key, key)
+
+    pair_count, deletes = 0, []
+    emit(f"(({old} || %s::jsonb)", json.dumps(plain, default=json_default))
+    for key, (k, value) in ops.items():
+        if k == "delete":
+            deletes.append(key)
+            continue
+        emit(" || jsonb_build_object(%s, ", key)
+        if k == "increment":
+            emit(f"CASE WHEN jsonb_typeof({old}->%s) = 'number' "
+                 f"THEN to_jsonb(({old}->>%s)::numeric + %s::numeric) ELSE to_jsonb(%s::numeric) END",
+                 key, key, value.value, value.value)
+        elif k == "array_union":
+            existing_array(key)
+            emit(" || (SELECT COALESCE(jsonb_agg(x.m ORDER BY x.o), '[]'::jsonb) "
+                 "FROM jsonb_array_elements(%s::jsonb) WITH ORDINALITY AS x(m, o) "
+                 "WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(",
+                 json.dumps(dedupe(list(value.values)), default=json_default))
+            existing_array(key)
+            emit(") AS e(v) WHERE e.v = x.m))")
+        elif k == "array_remove":
+            emit("(SELECT COALESCE(jsonb_agg(e.v ORDER BY e.o), '[]'::jsonb) FROM jsonb_array_elements(")
+            existing_array(key)
+            emit(") WITH ORDINALITY AS e(v, o) WHERE NOT EXISTS ("
+                 "SELECT 1 FROM jsonb_array_elements(%s::jsonb) AS r(v) WHERE r.v = e.v))",
+                 json.dumps(list(value.values), default=json_default))
+        emit(")")
+        pair_count += 1
+    emit(")")
+    if deletes:
+        emit(" - %s::text[]", deletes)
+    sql = "".join(f for f, _ in frags)
+    params = [p for _, ps in frags for p in ps]
+    assert sql.count("%s") == len(params), "transform SQL/param mismatch"
+    return sql, params
 
 
 def _timestamp_column_value(value, data_type: str):

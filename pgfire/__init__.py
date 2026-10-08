@@ -9,15 +9,19 @@ columns for fast indexed filtering).
 Built as a migration bridge for one specific, real cutover (see README's
 "Scope & Intention") - not a general-purpose ORM. Supported: .collection(),
 .document(), .get()/.set()/.update()/.delete(), .where()/.order_by()/.limit(),
-.stream()/.get(), .count()/.aggregate(), subcollections (composable to any
-depth), .batch(), transaction(). Not implemented: array_contains,
-cursor-based pagination (start_after/start_at) - audit your own call sites
-before assuming parity on anything not listed here.
+.select() projections, .stream()/.get(), .count()/.aggregate(),
+subcollections (composable to any depth), .batch() (atomic), transaction(),
+and the field transforms Increment / ArrayUnion / ArrayRemove /
+SERVER_TIMESTAMP / DELETE_FIELD (pgfire's own or google-cloud-firestore's).
+Not implemented: array_contains, cursor-based pagination
+(start_after/start_at), collection_group, Maximum/Minimum - audit your own
+call sites before assuming parity on anything not listed here.
 """
 
 from .client import PostgresClient
 from .collection import CollectionRef, Query, WriteBatch
 from .document import DocumentRef, DocumentSnapshot
+from .transforms import DELETE_FIELD, SERVER_TIMESTAMP, ArrayRemove, ArrayUnion, Increment
 
 __all__ = [
     "PostgresClient",
@@ -26,6 +30,11 @@ __all__ = [
     "WriteBatch",
     "DocumentRef",
     "DocumentSnapshot",
+    "Increment",
+    "ArrayUnion",
+    "ArrayRemove",
+    "SERVER_TIMESTAMP",
+    "DELETE_FIELD",
 ]
 
-__version__ = "0.0.2"
+__version__ = "0.1.4"

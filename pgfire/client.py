@@ -28,23 +28,23 @@ class _ColumnCache:
                 self._cache[table] = {row[0] for row in cur.fetchall()}
         return self._cache[table]
 
-    def writable_timestamp_columns(self, table: str) -> set:
+    def writable_timestamp_columns(self, table: str) -> dict:
         """Plain (NOT generated) date/timestamp columns - e.g. created_at,
-        session_date, due_date. These can't be GENERATED (Postgres rejects
-        text->timestamp casts there, not IMMUTABLE), so .set() must
-        populate them itself from a matching key in the JSON payload or
-        they silently stay NULL forever."""
+        session_date, due_date - mapped to their data_type. These can't be
+        GENERATED (Postgres rejects text->timestamp casts there, not
+        IMMUTABLE), so .set() must populate them itself from a matching key
+        in the JSON payload or they silently stay NULL forever."""
         key = f"{table}::ts"
         if key not in self._cache:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
+                    "SELECT column_name, data_type FROM information_schema.columns "
                     "WHERE table_schema = 'public' AND table_name = %s "
                     "AND is_generated = 'NEVER' AND data_type IN "
                     "('timestamp without time zone', 'timestamp with time zone', 'date')",
                     (table,),
                 )
-                self._cache[key] = {row[0] for row in cur.fetchall()}
+                self._cache[key] = {row[0]: row[1] for row in cur.fetchall()}
         return self._cache[key]
 
     def invalidate(self, table: str) -> None:

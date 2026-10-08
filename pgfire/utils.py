@@ -4,7 +4,7 @@ coercion for JSONB comparisons, and NULL-check handling."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Any, Optional
 
 OP_SQL = {
@@ -93,15 +93,28 @@ def coerce(value: Any, is_real_column: bool) -> Any:
     if value is None:
         return None
     if isinstance(value, (datetime, date)):
-        # Must match how json_default() serialized it on write (isoformat,
-        # "T" separator). str(datetime) uses a space instead, and since
-        # " " sorts before "T", same-day range comparisons against stored
-        # timestamps would silently give the wrong answer.
-        return value.isoformat()
+        # Must match how json_default() serialized it on write (UTC ISO,
+        # "T" separator) or range comparisons against stored timestamps
+        # silently give the wrong answer.
+        return to_utc_iso(value)
     return str(value)
+
+
+def to_utc_iso(value) -> str:
+    """Firestore stores timestamps as UTC instants, so the same instant
+    always compares equal regardless of the offset it was created with.
+    Serializing a datetime with its own offset broke that: 13:00+03:00 and
+    10:00+00:00 are one instant but compare as different strings, so a
+    UTC range query could miss an overlapping booking. Aware datetimes are
+    converted to UTC; naive ones are treated as UTC (as the Firestore
+    client does). Plain dates are left as YYYY-MM-DD."""
+    if isinstance(value, datetime):
+        value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return value.isoformat()
+    return value.isoformat()
 
 
 def json_default(obj):
     if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
+        return to_utc_iso(obj)
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")

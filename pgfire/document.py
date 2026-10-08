@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from .utils import json_default
@@ -64,7 +65,12 @@ class DocumentRef:
         # aren't GENERATED, so populate any that match a key in `data`
         # ourselves - otherwise they silently stay NULL forever.
         ts_cols = self._client.columns.writable_timestamp_columns(self._table)
-        ts_updates = {col: data[col] for col in ts_cols if col in data and data[col] is not None}
+        ts_updates = {}
+        for col, data_type in ts_cols.items():
+            if col in data and data[col] is not None:
+                value = _timestamp_column_value(data[col], data_type)
+                if value is not None:
+                    ts_updates[col] = value
 
         col_names = ["id"]
         col_values = [self.id]
@@ -126,3 +132,32 @@ class DocumentRef:
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _timestamp_column_value(value, data_type: str):
+    """Value for a real date/timestamp column, or None to leave it NULL.
+
+    - Offsets are honored: Postgres silently DROPS the offset when a string
+      like '13:00+03:00' is cast to `timestamp without time zone` (stores
+      13:00, not the 10:00 UTC instant), so conversion happens here, to UTC.
+    - Anything that isn't a datetime/date or an ISO-8601 string is skipped
+      instead of failing the whole write on a cast error - Firestore accepts
+      e.g. created_at: "" without complaint, and the value stays in `data`.
+    """
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, date):
+        return value if data_type == "date" else datetime(value.year, value.month, value.day)
+    elif isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+    if data_type == "timestamp with time zone":
+        return dt
+    if data_type == "date":
+        return dt.date()
+    return dt.replace(tzinfo=None)  # timestamp without time zone holds the UTC wall-clock time

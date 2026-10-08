@@ -185,3 +185,36 @@ def test_transaction_still_rolls_back_with_autocommit_default(db):
         pass
     assert not db.collection("test_users").document("tx1").get().exists
     assert db.conn.autocommit is True
+
+
+def test_offset_datetime_stored_as_utc_and_range_query_finds_it(db):
+    """13:00+03:00 is 10:00Z. Stored with its own offset, a UTC range query
+    (as a booking-overlap check builds it) missed it - a double-booking risk."""
+    from datetime import datetime, timedelta, timezone
+
+    eat = timezone(timedelta(hours=3))
+    ref = db.collection("test_users").document("tz1")
+    ref.set({"start_time": datetime(2026, 10, 20, 13, 0, tzinfo=eat)})
+    assert ref.get().to_dict()["start_time"] == "2026-10-20T10:00:00+00:00"
+    lo = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
+    hi = datetime(2026, 10, 20, 11, 0, tzinfo=timezone.utc)
+    hits = list(db.collection("test_users").where("start_time", ">=", lo).where("start_time", "<=", hi).stream())
+    assert [h.id for h in hits] == ["tz1"]
+    # and querying with a non-UTC param works too
+    hits = list(db.collection("test_users").where("start_time", "==", datetime(2026, 10, 20, 13, 0, tzinfo=eat)).stream())
+    assert [h.id for h in hits] == ["tz1"]
+
+
+def test_real_timestamp_column_honors_string_offset(db):
+    """Postgres drops the offset when casting '13:00+03:00' to a timestamp
+    without time zone; the column must hold the 10:00 UTC instant."""
+    db.collection("test_users").document("tz2").set({"created_at": "2026-10-20T13:00:00+03:00"})
+    with db.conn.cursor() as cur:
+        cur.execute("SELECT created_at FROM test_users WHERE id = 'tz2'")
+        assert str(cur.fetchone()[0]) == "2026-10-20 10:00:00"
+
+
+def test_unparseable_timestamp_value_does_not_fail_write(db):
+    db.collection("test_users").document("tz3").set({"created_at": "", "email": "tz3@x.com"})
+    snap = db.collection("test_users").document("tz3").get()
+    assert snap.exists and snap.to_dict()["created_at"] == ""

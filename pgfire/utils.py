@@ -52,6 +52,12 @@ def coerce(value: Any, is_real_column: bool) -> Any:
         return "true" if value else "false"
     if value is None:
         return None
+    if isinstance(value, (datetime, date)):
+        # Must match how json_default() serialized it on write (isoformat,
+        # "T" separator). str(datetime) uses a space instead, and since
+        # " " sorts before "T", same-day range comparisons against stored
+        # timestamps would silently give the wrong answer.
+        return value.isoformat()
     return str(value)
 
 

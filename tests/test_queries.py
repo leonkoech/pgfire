@@ -66,6 +66,23 @@ def test_aggregate_with_tuple_filters(db):
     assert result == {"total": 3, "patients": 2, "therapists": 1}
 
 
+def test_jsonb_datetime_filter_matches_same_day_boundary(db):
+    """A datetime compared against a JSONB (non-promoted) timestamp must be
+    serialized the same way it was written (isoformat, "T" separator).
+    str(datetime) uses a space, and " " < "T", so a same-day >= filter
+    would wrongly exclude a doc stamped later that same day."""
+    from datetime import datetime, timezone
+
+    stamped = datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)
+    db.collection("test_users").document("d1").set({"joined_at": stamped})
+    since = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
+    until = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    hits = list(
+        db.collection("test_users").where("joined_at", ">=", since).where("joined_at", "<=", until).stream()
+    )
+    assert [h.id for h in hits] == ["d1"]
+
+
 def test_aggregate_with_raw_sql_filter(db):
     _seed(db)
     result = db.collection("test_users").aggregate(

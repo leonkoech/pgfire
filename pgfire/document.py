@@ -13,13 +13,26 @@ from .utils import json_default
 class DocumentSnapshot:
     """Mirrors Firestore's DocumentSnapshot: `.exists`, `.id`, `.to_dict()`."""
 
-    def __init__(self, doc_id: Optional[str], data: Optional[dict]):
+    def __init__(self, doc_id: Optional[str], data: Optional[dict],
+                 client=None, table: Optional[str] = None, parent_id: Optional[str] = None):
         self.id = doc_id
         self._data = data
         self.exists = data is not None
+        self._client = client
+        self._table = table
+        self._parent_id = parent_id
 
     def to_dict(self) -> Optional[dict]:
         return dict(self._data) if self._data is not None else None
+
+    @property
+    def reference(self) -> "DocumentRef":
+        """The DocumentRef this snapshot came from (Firestore parity), so
+        callers can snap.reference.update(...)/.delete()/.collection(...).
+        Available on snapshots produced by a query stream or a document get."""
+        if self._client is None or self._table is None:
+            raise ValueError("snapshot has no reference (not produced from a table-backed read)")
+        return DocumentRef(self._client, self._table, self.id, parent_id=self._parent_id)
 
 
 class DocumentRef:
@@ -55,7 +68,8 @@ class DocumentRef:
             else:
                 cur.execute(f'SELECT data FROM "{self._table}" WHERE id = %s', (self.id,))
             row = cur.fetchone()
-            return DocumentSnapshot(self.id, row[0] if row else None)
+            return DocumentSnapshot(self.id, row[0] if row else None,
+                                    client=self._client, table=self._table, parent_id=self._parent_id)
 
     def update(self, data: dict) -> None:
         """Like Firestore's DocumentReference.update(): merges fields into an

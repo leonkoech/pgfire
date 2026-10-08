@@ -36,11 +36,14 @@ Plain (non-generated) timestamp columns — e.g. `created_at`, `session_date` �
 - `db.collection(name)` / `.document(id)` — chainable refs, matching Firestore's shape
 - `.get()` / `.set(data, merge=False)` / `.update(data)` / `.delete()` — `update()` raises `pgfire.NotFound` on a missing document, like Firestore
 - Field transforms: `Increment`, `ArrayUnion`, `ArrayRemove`, `SERVER_TIMESTAMP`, `DELETE_FIELD` — pgfire's own, **or google-cloud-firestore's** (recognized by duck-typing, no dependency), so `firestore.Increment(1)` code runs unchanged. Applied atomically in the same SQL statement as the write.
-- `.where(field, op, value)` with `==`, `!=`, `<`, `<=`, `>`, `>=`, `in` — chainable, `AND`-combined
+- `.where(field, op, value)` with `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `array_contains`, `array_contains_any` — chainable, `AND`-combined
 - `.order_by(field, direction)`, `.limit(n)`, `.select([fields])` (projection)
 - `.stream()` (generator) / `.get()` (list) on a query
 - `.count()` — `COUNT(*)` server-side, no row fetch
 - `.aggregate(**named_filters)` — multiple `COUNT(*) FILTER (WHERE ...)` conditions in a single round trip; each value is `(field, op, value)` or a raw SQL boolean expression string
+- `snapshot.reference` — the `DocumentRef` a snapshot came from, so `snap.reference.update(...)`/`.delete()`/`.collection(...)` work
+- `db.get_all(refs)` — batched read, one query per table, snapshots in input order (missing doc → `.exists == False`)
+- `db.collection_group(name)` — the top-level table `name` and every `*__name` subcollection table queried together; `where`/`order_by`/`limit`/`stream`/`get`/`count`
 - Subcollections, composable to any depth
 - `.batch()` — atomic, all-or-nothing like a Firestore `WriteBatch`
 - `db.transaction()` — a `BEGIN ... COMMIT` context manager (row locking is on you — take it out yourself with `SELECT ... FOR UPDATE` inside the block)
@@ -53,8 +56,7 @@ Plain (non-generated) timestamp columns — e.g. `created_at`, `session_date` �
 
 ## What's not implemented
 
-- `array_contains` / array-membership filters
-- `collection_group()` queries, `Maximum`/`Minimum` transforms, transforms nested inside a map field
+- `Maximum`/`Minimum` transforms, transforms nested inside a map field
 - Cursor-based pagination (`start_after` / `start_at`) — use `.limit()` with an `.order_by()` on an indexed column instead
 - `.select()` on nested (dotted) field paths
 - Connection pooling — `PostgresClient` holds one plain `psycopg2` connection. Put a pooler (AWS RDS Proxy, PgBouncer) in front of it for any real concurrent traffic.

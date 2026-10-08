@@ -45,6 +45,13 @@ def is_number(value: Any) -> bool:
 
 def compare_sql(field: str, op: str, value: Any, real_columns: set) -> tuple:
     """SQL fragment + params for one (field, op, value) filter."""
+    if op == "array_contains":
+        # Firestore array-membership: the JSONB array field contains `value`.
+        return f"{field_jsonb_expr(field)} @> %s::jsonb", [json.dumps(value)]
+    if op == "array_contains_any":
+        # Matches if the array field contains ANY of `value` (a list).
+        ors = " OR ".join([f"{field_jsonb_expr(field)} @> %s::jsonb"] * len(value))
+        return f"({ors})", [json.dumps(v) for v in value]
     sql_op = OP_SQL.get(op)
     if sql_op is None:
         raise NotImplementedError(f"Unsupported operator: {op}")

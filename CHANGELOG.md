@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.5
+
+New Firestore API surface, needed to run a whole app through pgfire (not just
+the hand-ported hot paths). Each has regression tests.
+
+- **`DocumentSnapshot.reference`** — snapshots from a query `stream()`/`get()`
+  and from a document `get()` now carry a usable `DocumentRef`, so
+  `snap.reference.update(...)` / `.delete()` / `.collection(...)` work as in
+  Firestore.
+- **`PostgresClient.get_all(references)`** — batched read: one query per
+  distinct table, snapshots returned in the same order as the input (a missing
+  document is a snapshot with `.exists == False`). Subcollection refs are
+  scoped by `(parent_id, id)`. Replaces the N+1 `.get()` loop.
+- **`PostgresClient.collection_group(name)`** — queries the top-level table
+  `name` and every subcollection table `*__name` together (UNION ALL).
+  Supports `where` / `order_by` / `limit` / `stream` / `get` / `count`;
+  snapshots carry the right `.reference`. Filtering/ordering use JSONB
+  expressions (the member tables are heterogeneous).
+- **`where(field, "array_contains", value)`** and **`"array_contains_any"`** —
+  JSONB containment (`@>`), matching Firestore's array-membership filters.
+
 ## 0.1.4
 
 Found while porting a real ~230-function Firestore data layer onto pgfire; each

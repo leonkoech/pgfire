@@ -98,6 +98,52 @@ class PostgresClient:
         self.ensure_connected()
         return CollectionRef(self, name)
 
+    def get_all(self, references):
+        """Firestore's batched get: one query per distinct table, returned as
+        DocumentSnapshots in the SAME ORDER as `references` (a missing doc is
+        a snapshot with .exists == False). Replaces an N+1 loop of .get()."""
+        from .document import DocumentSnapshot
+        refs = list(references)
+        self.ensure_connected()
+        by_table = {}
+        for i, ref in enumerate(refs):
+            by_table.setdefault(ref._table, []).append((i, ref))
+        out = [None] * len(refs)
+        for table, items in by_table.items():
+            has_parent = "parent_id" in self.columns.real_columns(table)
+            scoped = [(i, r) for i, r in items if has_parent and r._parent_id is not None]
+            flat = [(i, r) for i, r in items if not (has_parent and r._parent_id is not None)]
+            rows = {}
+            with self.conn.cursor() as cur:
+                if flat:
+                    cur.execute(f'SELECT id, data FROM "{table}" WHERE id = ANY(%s)',
+                                ([r.id for _, r in flat],))
+                    rows_flat = {row[0]: row[1] for row in cur.fetchall()}
+                    for i, r in flat:
+                        out[i] = DocumentSnapshot(r.id, rows_flat.get(r.id), client=self,
+                                                  table=table, parent_id=r._parent_id)
+                if scoped:
+                    # subcollection rows are keyed by (parent_id, id)
+                    pairs = [(r._parent_id, r.id) for _, r in scoped]
+                    from psycopg2.extras import execute_values
+                    cur.execute(
+                        f'SELECT parent_id, id, data FROM "{table}" WHERE (parent_id, id) IN %s',
+                        (tuple(pairs),))
+                    got = {(row[0], row[1]): row[2] for row in cur.fetchall()}
+                    for i, r in scoped:
+                        out[i] = DocumentSnapshot(r.id, got.get((r._parent_id, r.id)), client=self,
+                                                  table=table, parent_id=r._parent_id)
+        return out
+
+    def collection_group(self, name: str):
+        """Query every collection with id `name` at any depth: the top-level
+        table `name` (if it exists) and every subcollection table `*__name`.
+        Mirrors Firestore's collection_group. Read-only (stream/get/where/
+        order_by/limit); writes aren't defined on a group."""
+        from .collection import CollectionGroupQuery
+        self.ensure_connected()
+        return CollectionGroupQuery(self, name)
+
     def batch(self):
         from .collection import WriteBatch
         return WriteBatch(self)

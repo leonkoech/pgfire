@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pgfire"
-version = "0.1.4"
+version = "0.1.5"
 description = "A lightweight Firestore-to-PostgreSQL JSONB developer experience migration bridge."
 readme = "README.md"
 authors = [{ name = "Leon Koech" }]

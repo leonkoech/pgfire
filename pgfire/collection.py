@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Iterator, Optional
 
 from .document import DocumentRef, DocumentSnapshot, new_id
-from .utils import compare_sql, order_expr
+from .utils import compare_sql, order_expr, field_jsonb_expr
 
 
 class Query:
@@ -102,7 +102,8 @@ class Query:
         with self._client.conn.cursor() as cur:
             cur.execute(sql, params)
             for doc_id, data in cur.fetchall():
-                yield DocumentSnapshot(doc_id, data)
+                yield DocumentSnapshot(doc_id, data, client=self._client,
+                                       table=self._table, parent_id=self._parent_id)
 
     def get(self) -> list:
         return list(self.stream())
@@ -195,3 +196,83 @@ class WriteBatch:
                     ref.update(data)  # NotFound fails the whole batch, as in Firestore
                 else:
                     ref.set(data, merge=merge)
+
+
+class CollectionGroupQuery(Query):
+    """Firestore collection_group: one logical query over the top-level table
+    `name` (if present) and every subcollection table `*__name`, combined with
+    UNION ALL. Heterogeneous tables have different promoted columns, so filters
+    and ordering here always use JSONB expressions (uniform across tables)
+    rather than real columns. Read-only: stream / get / where / order_by /
+    limit / count."""
+
+    def __init__(self, client, name: str):
+        super().__init__(client, name)
+        self._group = name
+
+    def _member_tables(self) -> list:
+        # The top-level table `name` and every subcollection table `*__<name>`.
+        # Matched with a regex anchored on `(^|__)<name>$` so `foo__notes`
+        # matches but `footnotes` does not. The group name is an identifier
+        # segment (letters/digits/underscore), so it has no regex metacharacters
+        # beyond `_`, which is a literal in a POSIX regex.
+        pattern = r"(^|__)" + self._group + r"$"
+        with self._client.conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
+                "AND table_name ~ %s ORDER BY table_name",
+                (pattern,),
+            )
+            return [r[0] for r in cur.fetchall()]
+
+    def _filter_sql(self):
+        parts, params = [], []
+        for field, op, value in self._filters:
+            sql, p = compare_sql(field, op, value, set())  # no real columns -> JSONB
+            parts.append(sql)
+            params.extend(p)
+        clause = (" WHERE " + " AND ".join(parts)) if parts else ""
+        return clause, params
+
+    def _clone(self) -> "CollectionGroupQuery":
+        q = CollectionGroupQuery(self._client, self._group)
+        q._filters = list(self._filters)
+        q._order = self._order
+        q._limit_n = self._limit_n
+        q._select = self._select
+        return q
+
+    def stream(self) -> Iterator[DocumentSnapshot]:
+        tables = self._member_tables()
+        if not tables:
+            return
+        where_sql, where_params = self._filter_sql()
+        subqueries = [f'SELECT id, data, {self._lit(t)} AS __src FROM "{t}"{where_sql}' for t in tables]
+        params = where_params * len(tables)
+        sql = " UNION ALL ".join(subqueries)
+        if self._order:
+            field, direction = self._order
+            sql = f"SELECT * FROM ({sql}) g ORDER BY {field_jsonb_expr(field)} {direction}"
+        if self._limit_n is not None:
+            sql += " LIMIT %s"
+            params = params + [self._limit_n]
+        with self._client.conn.cursor() as cur:
+            cur.execute(sql, params)
+            for doc_id, data, src in cur.fetchall():
+                yield DocumentSnapshot(doc_id, data, client=self._client, table=src)
+
+    @staticmethod
+    def _lit(table: str) -> str:
+        # table names come from information_schema, not user input
+        return "'" + table.replace("'", "''") + "'"
+
+    def count(self) -> int:
+        tables = self._member_tables()
+        if not tables:
+            return 0
+        where_sql, where_params = self._filter_sql()
+        sql = " + ".join([f'(SELECT COUNT(*) FROM "{t}"{where_sql})' for t in tables])
+        with self._client.conn.cursor() as cur:
+            cur.execute(f"SELECT {sql}", where_params * len(tables))
+            return cur.fetchone()[0]

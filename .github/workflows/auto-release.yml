@@ -1,0 +1,50 @@
+name: Auto-release on version bump
+
+# Automates what had to be done by hand for 0.1.1: the only manual step
+# from here on is bumping `version` in pyproject.toml and merging to main.
+# This workflow then tags that commit and creates a GitHub Release
+# matching it, which triggers publish.yml (on `release: published`) to
+# actually build and ship to PyPI. No separate "create a release" step,
+# and no more silent no-ops from a tag name that doesn't match the
+# version PyPI actually publishes.
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version was already released
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag + GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            --target "${{ github.sha }}"

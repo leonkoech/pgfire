@@ -27,28 +27,37 @@ If you're starting something new, use [SQLAlchemy](https://sqlalchemy.org) or [P
 
 Storage model: one Postgres table per Firestore collection. Every table has `id TEXT PRIMARY KEY` and `data JSONB`. Any field you filter/order on often can be promoted to a real `GENERATED ALWAYS AS (data->>'field') STORED` column for a real index — `pgfire` detects which columns exist via `information_schema` and uses them automatically; anything not promoted falls back to a `data->>'field'` JSONB lookup, so it works against a bare `(id, data)` table too.
 
-Subcollections (`users/{uid}/moods/{uid}`) map to a separate table named by joining the path with `__` (`users__moods`), with a `parent_id` column holding the parent document's id. This composes at any depth automatically — there's no special-casing per collection, calling `.document(id).collection(name)` again just repeats the same rule on whatever table you're currently on.
+Subcollections (`users/{uid}/moods/{uid}`) map to a separate table named by joining the path with `__` (`users__moods`), with a `parent_id` column holding the parent document's id. This composes at any depth automatically — there's no special-casing per collection, calling `.document(id).collection(name)` again just repeats the same rule on whatever table you're currently on. As in Firestore, a child id only has to be unique **within its parent**, so subcollection tables need `PRIMARY KEY (parent_id, id)`; reads, writes and deletes are scoped to the parent.
 
 Plain (non-generated) timestamp columns — e.g. `created_at`, `session_date` — can't be `GENERATED` (Postgres rejects `text->timestamp` casts there; the cast isn't `IMMUTABLE`). `pgfire`'s `.set()` populates any such column itself from a matching key in the document you pass in, so you don't have to maintain it by hand.
 
 ## What's implemented
 
 - `db.collection(name)` / `.document(id)` — chainable refs, matching Firestore's shape
-- `.get()` / `.set(data, merge=False)` / `.update(data)` / `.delete()`
+- `.get()` / `.set(data, merge=False)` / `.update(data)` / `.delete()` — `update()` raises `pgfire.NotFound` on a missing document, like Firestore
+- Field transforms: `Increment`, `ArrayUnion`, `ArrayRemove`, `SERVER_TIMESTAMP`, `DELETE_FIELD` — pgfire's own, **or google-cloud-firestore's** (recognized by duck-typing, no dependency), so `firestore.Increment(1)` code runs unchanged. Applied atomically in the same SQL statement as the write.
 - `.where(field, op, value)` with `==`, `!=`, `<`, `<=`, `>`, `>=`, `in` — chainable, `AND`-combined
-- `.order_by(field, direction)`, `.limit(n)`
+- `.order_by(field, direction)`, `.limit(n)`, `.select([fields])` (projection)
 - `.stream()` (generator) / `.get()` (list) on a query
 - `.count()` — `COUNT(*)` server-side, no row fetch
 - `.aggregate(**named_filters)` — multiple `COUNT(*) FILTER (WHERE ...)` conditions in a single round trip; each value is `(field, op, value)` or a raw SQL boolean expression string
 - Subcollections, composable to any depth
-- `.batch()` — multiple writes applied together
+- `.batch()` — atomic, all-or-nothing like a Firestore `WriteBatch`
 - `db.transaction()` — a `BEGIN ... COMMIT` context manager (row locking is on you — take it out yourself with `SELECT ... FOR UPDATE` inside the block)
+
+## Semantics worth knowing
+
+- **Timestamps are stored as UTC instants**, like Firestore: an aware `datetime` is converted to UTC; a naive one is treated as UTC. They read back as ISO-8601 strings (`"2026-10-20T10:00:00+00:00"`), not `datetime` objects — parse them where you do arithmetic.
+- **Numbers compare numerically** in `where()`/`order_by()` on JSONB fields (`10 > 9`, `5 == 5.0`); strings compare as text.
+- **Autocommit outside `transaction()`**: a long-lived client never sits "idle in transaction", and one failed statement can't poison later ones. The client reconnects automatically if its connection was closed (server restart, failover).
 
 ## What's not implemented
 
 - `array_contains` / array-membership filters
+- `collection_group()` queries, `Maximum`/`Minimum` transforms, transforms nested inside a map field
 - Cursor-based pagination (`start_after` / `start_at`) — use `.limit()` with an `.order_by()` on an indexed column instead
-- Connection pooling — `PostgresClient` holds one plain `psycopg2` connection. Put a pooler (AWS RDS Proxy, PgBouncer) in front of it for any real concurrent traffic; don't share one `PostgresClient` across threads/requests without one.
+- `.select()` on nested (dotted) field paths
+- Connection pooling — `PostgresClient` holds one plain `psycopg2` connection. Put a pooler (AWS RDS Proxy, PgBouncer) in front of it for any real concurrent traffic.
 - Compile-time type checking / a generated client — `pgfire` coerces values for JSONB comparisons at runtime (see `pgfire/utils.py`); there's no static schema to check your calls against. Lean on integration tests.
 - Foreign-key enforcement — the `data` payload isn't validated against anything; nothing stops a dangling reference the way a real FK would.
 

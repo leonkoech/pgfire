@@ -149,3 +149,18 @@ def test_select_rejects_dotted_paths(db):
     import pytest
     with pytest.raises(NotImplementedError):
         db.collection("test_users").select(["company_data.company_id"])
+
+
+def test_where_accepts_fieldfilter_kwarg(db):
+    """Firestore's newer .where(filter=FieldFilter(...)) form (used across the
+    app's storage.py modules) must work, not just positional field/op/value."""
+    from google.cloud.firestore_v1.base_query import FieldFilter
+    db.collection("test_users").document("a").set({"user_type": "patient", "n": 1})
+    db.collection("test_users").document("b").set({"user_type": "admin", "n": 2})
+    got = {s.id for s in db.collection("test_users")
+           .where(filter=FieldFilter("user_type", "==", "patient")).stream()}
+    assert got == {"a"}
+    # chained with positional still works
+    got2 = {s.id for s in db.collection("test_users")
+            .where(filter=FieldFilter("n", ">", 0)).where("user_type", "==", "admin").stream()}
+    assert got2 == {"b"}

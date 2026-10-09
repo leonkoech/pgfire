@@ -20,7 +20,14 @@ class Query:
         self._limit_n: Optional[int] = None
         self._select: Optional[list] = None
 
-    def where(self, field: str, op: str, value: Any) -> "Query":
+    def where(self, field=None, op=None, value=None, *, filter=None) -> "Query":
+        # Firestore's newer keyword form: .where(filter=FieldFilter(f, op, v)).
+        # Accept a FieldFilter (duck-typed, no google-cloud-firestore dependency)
+        # as well as the positional field/op/value form.
+        if filter is not None:
+            field, op, value = filter.field_path, filter.op_string, filter.value
+        if field is None or op is None:
+            raise TypeError("where() requires (field, op, value) or filter=FieldFilter(...)")
         q = self._clone()
         q._filters.append((field, op, value))
         return q

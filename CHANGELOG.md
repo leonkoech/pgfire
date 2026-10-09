@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6
+
+- **`where(filter=FieldFilter(...))`** - support Firestore's newer keyword form
+  in addition to positional `where(field, op, value)`. FieldFilter is
+  duck-typed (`.field_path`/`.op_string`/`.value`), no google-cloud-firestore
+  dependency. Real Firestore code bases use this form widely; without it those
+  `.where(filter=...)` call sites raised `TypeError: unexpected keyword 'filter'`.
+
 ## 0.1.5
 
 New Firestore API surface, needed to run a whole app through pgfire (not just
